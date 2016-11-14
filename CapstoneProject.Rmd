@@ -1,0 +1,185 @@
+---
+title: "Coursera Data Science Capstone Project - Milestone Report"
+author: "Jack"
+date: "October 19, 2016"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+## Introduction
+
+Portable office actually means the works done on the cellphone and the tablet and we need input system to saving our time on typing on them. So a smart and efficient keyboard is required and the core of this input system is a predictive text model. This milestone report is focused on this model, covering the very beginning, namely data collection, to exploratory analysis of the data set.
+
+## Data Collection
+
+The data were downloaded from the course website (from [HC Corpora](http://www.corpora.heliohost.org)) and unzipped to extract the English database as a corpus. Three text documents from the twitter, blog and news were found with each line standing for a message.
+
+```{r setup, warning=FALSE, include=FALSE, message=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+
+options( java.parameters = "-Xmx1024m" )
+ 
+library(magrittr)
+library(tm) 
+library(wordnet)
+library(wordcloud)
+library(RWeka)
+library(stringi)
+library(knitr)
+library(parallel)
+library(ggplot2)
+library(gridExtra)
+
+#setDict("D:/R/dict")
+setDict("/Users/jackmok1/Downloads/dict")
+
+gramtodf <- function(gram,maxWord) {
+    d.mx <- as.matrix(gram)
+    d.sort_mx <- sort(rowSums(d.mx),decreasing=TRUE)
+    d.sort_mx <- d.sort_mx[1:maxWord]
+    d.df_word <- data.frame(word = names(d.sort_mx),freq=d.sort_mx)
+    return(d.df_word)
+}
+
+drawWordHist <- function(gram,maxWord,titleText) {
+  df.df_word <- gramtodf(gram,maxWord)
+  ggplot(df.df_word, aes(x=reorder(word, -freq), y=freq)) +
+ geom_bar(stat="identity") +
+ theme_bw() +
+ theme(axis.title.x = element_blank(), axis.text.x=element_text(angle = -90, hjust = 0)) +
+ ggtitle(titleText)
+}
+
+drawWordCloud <- function(gram,maxWord,titleText) {
+#    d.mx <- as.matrix(gram)
+#    d.sort_mx <- sort(rowSums(d.mx),decreasing=TRUE)
+#    d.df_word <- data.frame(word = names(d.sort_mx),freq=d.sort_mx)
+    d.df_word <- gramtodf(gram,maxWord)
+    pal2 <- brewer.pal(6, "Dark2")
+    wordcloud(d.df_word$word,d.df_word$freq,scale=c(2,0.3), min.freq=2,max.words=maxWord, random.order=FALSE,
+              colors=pal2,rot.per = 0,fixed.asp = TRUE)
+    title(main = titleText)
+}
+
+```
+## Load Data 
+- It is assumed that the encoding of the dataset is UTF-8
+- Load each file one by one using readLines function
+
+```{r Load data, cache=TRUE,message=FALSE, warning=FALSE}
+
+blogsdoc <- readLines("/Users/jackmok1/Downloads/final/en_US/en_US.blogs.txt", encoding = "UTF-8",skipNul = TRUE)
+newsdoc <- readLines("/Users/jackmok1/Downloads/final/en_US/en_US.news.txt", encoding = "UTF-8",skipNul = TRUE)
+twittersdoc <- readLines("/Users/jackmok1/Downloads/final/en_US/en_US.twitter.txt", encoding = "UTF-8",skipNul = TRUE)
+
+#blogsdoc <- readLines("D:/DS/Coursera-SwiftKey/final/en_US/en_US.blogs.txt", encoding = "UTF-8",skipNul = TRUE)
+#newsdoc <- readLines("D:/DS/Coursera-SwiftKey/final/en_US/en_US.news.txt", encoding = "UTF-8",skipNul = TRUE)
+#twittersdoc <- readLines("D:/DS/Coursera-SwiftKey/final/en_US/en_US.twitter.txt", encoding = "UTF-8",skipNul = TRUE)
+
+```
+## Summary 
+The basic summary of the orginal data set is shown as follows:
+
+```{r Initialize Summary, message=FALSE,cache=TRUE}
+stats=data.frame(
+  Dataset=c("blogsdoc","newsdoc","twittersdoc"),      
+  t(rbind(
+  sapply(list(blogsdoc,newsdoc,twittersdoc),stri_stats_general)[c('Lines','Chars'),],
+  Words=sapply(list(blogsdoc,newsdoc,twittersdoc),stri_stats_latex)['Words',])
+))
+kable(stats, align='c', caption = "Summary of the datasets")
+#gc();
+
+```
+
+## Data Cleansing 
+The data will be filtered by
+
+- 1)Sampling the data by 1% of three documents(3 files), example code -sample(blogs_sample, length(blogs_sample) * 0.01.
+- 2)the non-ASCII characters
+- 3)change the capital characters to lower case
+- 4)remove the punctuation
+- 5)numbers 
+- 6)stop words
+- 7)stemming the left words. 
+- 8)To decrease the spares of the term frequency
+
+
+```{r Data Cleansing, cache=TRUE}
+set.seed(123)
+blogs_sample <- iconv(blogsdoc,"UTF-8","ASCII",sub="")
+news_sample <- iconv(newsdoc,"UTF-8","ASCII",sub="")
+twitter_sample <- iconv(twittersdoc,"UTF-8","ASCII",sub="")
+
+sample_data <- c(sample(blogs_sample, length(blogs_sample) * 0.01),
+                 sample(news_sample, length(news_sample) * 0.01),
+                 sample(twitter_sample, length(twitter_sample) * 0.01)
+)
+
+
+                 
+d.V <- ""
+d.V <- Corpus(VectorSource(paste(sample_data,collapse = '')))
+d.V <- tm_map(d.V, removePunctuation)   # *Removing punctuation:*    
+d.V <- tm_map(d.V, removeNumbers)      # *Removing numbers:*    
+d.V <- tm_map(d.V, tolower)   # *Converting to lowercase:*    
+d.V <- tm_map(d.V, removeWords, stopwords("en"))   # *Removing "stopwords" 
+d.V <- tm_map(d.V, stemDocument)   # *Removing common word endings* (e.g., "ing", "es")   
+d.V <- tm_map(d.V, stripWhitespace)   # *Stripping whitespace   
+d.V <- tm_map(d.V, PlainTextDocument)   
+
+
+```
+
+## Tokenizer
+
+The whole tokenization is aiming at removing meaningless characters and the words with low frequency in the corpus. The final corpus will show the words  or n-gram with a high frequency which will be helpful for exploring the relationship between the words and building a manful statistical model.
+
+```{r Tokenizer, cache=TRUE, message=FALSE}
+token_delim <- " \\t\\r\\n.!?,;\"()"
+UnigramTokenizer <- function(x) NGramTokenizer(x, Weka_control(min = 1, max = 1,delimiter=token_delim))
+BigramTokenizer <- function(x) NGramTokenizer(x, Weka_control(min = 2, max = 2,delimiter=token_delim))
+TrigramTokenizer <- function(x) NGramTokenizer(x, Weka_control(min = 3, max = 3,delimiter=token_delim))
+
+d.EN_US_DTM_1gram <- TermDocumentMatrix(d.V, control = list(tokenize = UnigramTokenizer))
+d.EN_US_DTM_2gram <- TermDocumentMatrix(d.V, control = list(tokenize = BigramTokenizer))
+d.EN_US_DTM_3gram <- TermDocumentMatrix(d.V, control = list(tokenize = TrigramTokenizer))
+
+#removeSparseTerms(d.EN_US_DTM_1gram,0.4)
+#removeSparseTerms(d.EN_US_DTM_2gram,0.4)
+#removeSparseTerms(d.EN_US_DTM_3gram,0.4)
+```
+
+## Exploratory analysis 
+
+###Figure 1 Histogram of nGrams(Top 10)
+```{r Exploratory analysis-hist, warning=FALSE}
+
+plot1 <- drawWordHist(d.EN_US_DTM_1gram,10,"Most freq. UniGram")
+plot2 <- drawWordHist(d.EN_US_DTM_2gram,10,"Most freq. BiGram")
+plot3 <- drawWordHist(d.EN_US_DTM_3gram,10,"Most freq. TriGram")
+grid.arrange(plot1,plot2,plot3, ncol=3)
+```
+
+###Figure 2 WordCloud of nGrams(Top 10)
+```{r Exploratory analysis-WordCloud, warning=FALSE}
+par(oma=c(0,0,3,0),mfrow = c(1,3), mar=c(3,3,3,3))
+drawWordCloud(d.EN_US_DTM_1gram,10,"Most Uni-gram words")
+drawWordCloud(d.EN_US_DTM_2gram,10,"Most Bi-gram words")
+drawWordCloud(d.EN_US_DTM_3gram,10,"Most Tri-gram words")
+
+```
+
+## Interest Findings
+- Scability. Feels like the real big data , in which running such scale of data in the desktop PC.
+- Integrity. The data cleansing step is very import to obtain accurate data.
+
+##Next Steps for the Prediction Application
+- As already noted, the next step of the capstone project will be to create a prediction application. To create a smooth and fast application it is absolutely necessary to build a fast prediction algorithm. 
+- Thus, find ways for a faster processing of larger datasets is necessary. Therefore, evaluate the suitable is very important.  In this project the following Algorithms will be evaluated :
+- Markov Assumption algorithm  (https://en.wikipedia.org/wiki/Markov_property)
+- chain Rule
+- Katz’s Backoff Model (https://thachtranerc.wordpress.com/2016/04/12/katzs-backoff-model-implementation-in-r/)  
+- smoothing technique (http://nlp.stanford.edu/~wcmac/papers/20050421-smoothing-tutorial.pdf) 
+- All in all a shiny application will be created which will be able to predict the next word a user wants to write.
